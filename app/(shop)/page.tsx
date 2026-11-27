@@ -17,6 +17,9 @@ import { VideoGrid } from "@/components/shop/video-grid";
 import { getCategories, getProducts, getSettings, getVideos } from "@/lib/catalog";
 import { formatVnd } from "@/lib/format";
 
+/** Product shown as the big photo in the home banner. */
+const HERO_PRODUCT_SLUG = "robot-cho-bien-hinh-dieu-khien";
+
 const tints = ["bg-tint-coral", "bg-tint-sun", "bg-tint-teal", "bg-tint-sky", "bg-tint-lilac", "bg-tint-coral"];
 
 export default async function HomePage() {
@@ -27,9 +30,12 @@ export default async function HomePage() {
     getSettings(),
   ]);
   const featured = products.filter((p) => p.is_featured && !p.is_out_of_stock);
-  const heroMain = featured[0] ?? products[0];
-  const heroA = featured[1];
-  const heroB = featured.find((p) => p.old_price && p.old_price > p.price) ?? featured[2];
+  // Owner's choice for the big banner photo; falls back if it's hidden/out of stock.
+  const heroMain =
+    products.find((p) => p.slug === HERO_PRODUCT_SLUG && !p.is_out_of_stock) ?? featured[0] ?? products[0];
+  const others = featured.filter((p) => p.id !== heroMain?.id);
+  const heroA = others[0];
+  const heroB = others.find((p) => p.id !== heroA?.id && p.old_price && p.old_price > p.price) ?? others[1];
 
   return (
     <>
@@ -75,6 +81,7 @@ export default async function HomePage() {
                   alt={heroMain.name}
                   className="aspect-square rounded-[32px] border-4 border-white bg-tint-coral shadow-[var(--shadow-soft)]"
                   sizes="(max-width: 768px) 100vw, 560px"
+                  fit="contain"
                   priority
                 />
               </Link>

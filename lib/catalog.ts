@@ -1,6 +1,36 @@
 import "server-only";
 import { createPublicClient } from "@/lib/supabase/server";
 
+/**
+ * During `next build` the database may be empty, unreachable or not configured yet
+ * (e.g. first Vercel deploy before `supabase db push`). Don't fail the build for that:
+ * pre-render with fallbacks and let ISR (revalidate = 60s) fill in real data.
+ * At runtime errors are thrown as usual, so Next keeps serving the last good page.
+ */
+const IS_BUILD = process.env.NEXT_PHASE === "phase-production-build";
+
+async function buildSafe<T>(label: string, fn: () => Promise<T>, fallback: T): Promise<T> {
+  if (!IS_BUILD) return fn();
+  try {
+    return await fn();
+  } catch (e) {
+    const err = e as { code?: string; message?: string };
+    const msg = [err?.code, err?.message].filter(Boolean).join(" ").slice(0, 160) || String(e);
+    console.warn(`[build] ${label}: database not ready, using fallback (${msg})`);
+    return fallback;
+  }
+}
+
+export const DEFAULT_SETTINGS = {
+  shop_name: "Thanh Chi Đồ Chơi",
+  hotline: "0358673493",
+  zalo_phone: "0358673493",
+  topbar_text: "Giao hàng toàn quốc · Thanh toán khi nhận hàng · Đổi trả trong 7 ngày",
+  promo_title: "Đồ chơi hot trên TikTok",
+  promo_text: "Xem video thật, đặt hàng nhanh — shop nhắn Zalo xác nhận ngay.",
+  zalo_message_template: "",
+};
+
 export type Category = {
   id: string;
   name: string;
@@ -55,12 +85,18 @@ function sortImages(p: Product): Product {
 }
 
 export async function getCategories(): Promise<Category[]> {
-  const { data, error } = await createPublicClient()
-    .from("categories")
-    .select("id, name, slug, image_path, sort_order")
-    .order("sort_order");
-  if (error) throw error;
-  return data ?? [];
+  return buildSafe(
+    "categories",
+    async () => {
+      const { data, error } = await createPublicClient()
+        .from("categories")
+        .select("id, name, slug, image_path, sort_order")
+        .order("sort_order");
+      if (error) throw error;
+      return data ?? [];
+    },
+    [],
+  );
 }
 
 export type ProductQuery = {
@@ -74,59 +110,83 @@ export type ProductQuery = {
 };
 
 export async function getProducts(q: ProductQuery = {}): Promise<Product[]> {
-  let query = createPublicClient().from("products").select(PRODUCT_FIELDS).eq("is_visible", true);
-  if (q.categoryId) query = query.eq("category_id", q.categoryId);
-  if (q.age) query = query.eq("age_range", q.age);
-  if (q.featured) query = query.eq("is_featured", true);
-  if (q.excludeId) query = query.neq("id", q.excludeId);
-  if (q.search) query = query.ilike("name", `%${q.search.replace(/[%_,()]/g, " ").trim()}%`);
-  switch (q.sort) {
-    case "price-asc":
-      query = query.order("price", { ascending: true });
-      break;
-    case "price-desc":
-      query = query.order("price", { ascending: false });
-      break;
-    case "newest":
-      query = query.order("created_at", { ascending: false });
-      break;
-    default:
-      query = query.order("is_out_of_stock").order("sort_order");
-  }
-  if (q.limit) query = query.limit(q.limit);
-  const { data, error } = await query;
-  if (error) throw error;
-  return ((data ?? []) as unknown as Product[]).map(sortImages);
+  return buildSafe(
+    "products",
+    async () => {
+      let query = createPublicClient().from("products").select(PRODUCT_FIELDS).eq("is_visible", true);
+      if (q.categoryId) query = query.eq("category_id", q.categoryId);
+      if (q.age) query = query.eq("age_range", q.age);
+      if (q.featured) query = query.eq("is_featured", true);
+      if (q.excludeId) query = query.neq("id", q.excludeId);
+      if (q.search) query = query.ilike("name", `%${q.search.replace(/[%_,()]/g, " ").trim()}%`);
+      switch (q.sort) {
+        case "price-asc":
+          query = query.order("price", { ascending: true });
+          break;
+        case "price-desc":
+          query = query.order("price", { ascending: false });
+          break;
+        case "newest":
+          query = query.order("created_at", { ascending: false });
+          break;
+        default:
+          query = query.order("is_out_of_stock").order("sort_order");
+      }
+      if (q.limit) query = query.limit(q.limit);
+      const { data, error } = await query;
+      if (error) throw error;
+      return ((data ?? []) as unknown as Product[]).map(sortImages);
+    },
+    [],
+  );
 }
 
 export async function getProductBySlug(slug: string): Promise<Product | null> {
-  const { data, error } = await createPublicClient()
-    .from("products")
-    .select(PRODUCT_FIELDS)
-    .eq("slug", slug)
-    .eq("is_visible", true)
-    .maybeSingle();
-  if (error) throw error;
-  return data ? sortImages(data as unknown as Product) : null;
+  return buildSafe(
+    "product",
+    async () => {
+      const { data, error } = await createPublicClient()
+        .from("products")
+        .select(PRODUCT_FIELDS)
+        .eq("slug", slug)
+        .eq("is_visible", true)
+        .maybeSingle();
+      if (error) throw error;
+      return data ? sortImages(data as unknown as Product) : null;
+    },
+    null,
+  );
 }
 
 export async function getVideos(): Promise<Video[]> {
-  const { data, error } = await createPublicClient()
-    .from("videos")
-    .select("id, path, poster_path, product_id, sort_order, products(slug, name, is_visible)")
-    .order("sort_order");
-  if (error) throw error;
-  type Row = Omit<Video, "products"> & { products: { slug: string; name: string; is_visible: boolean } | null };
-  return ((data ?? []) as unknown as Row[]).map((v) => ({
-    ...v,
-    products: v.products?.is_visible ? { slug: v.products.slug, name: v.products.name } : null,
-  }));
+  return buildSafe(
+    "videos",
+    async () => {
+      const { data, error } = await createPublicClient()
+        .from("videos")
+        .select("id, path, poster_path, product_id, sort_order, products(slug, name, is_visible)")
+        .order("sort_order");
+      if (error) throw error;
+      type Row = Omit<Video, "products"> & { products: { slug: string; name: string; is_visible: boolean } | null };
+      return ((data ?? []) as unknown as Row[]).map((v) => ({
+        ...v,
+        products: v.products?.is_visible ? { slug: v.products.slug, name: v.products.name } : null,
+      }));
+    },
+    [],
+  );
 }
 
 export async function getSettings(): Promise<Settings> {
-  const { data, error } = await createPublicClient().from("settings").select("*").eq("id", 1).single();
-  if (error) throw error;
-  return data as Settings;
+  return buildSafe(
+    "settings",
+    async () => {
+      const { data, error } = await createPublicClient().from("settings").select("*").eq("id", 1).single();
+      if (error) throw error;
+      return data as Settings;
+    },
+    DEFAULT_SETTINGS,
+  );
 }
 
 /** Minimal product info for the cart (re-validates prices/stock on the client). */
